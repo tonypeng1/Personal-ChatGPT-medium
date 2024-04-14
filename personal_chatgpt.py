@@ -3,9 +3,9 @@ import google.generativeai as genai
 from mistralai.client import MistralClient
 from mysql.connector import connect, Error
 import openai
-from openai.error import OpenAIError
+from openai import OpenAIError
 import streamlit as st
-import tiktoken
+
 
 from delete_message import delete_the_messages_of_a_chat_session, \
                         delete_all_rows
@@ -93,17 +93,12 @@ def end_session_save_to_mysql_and_save_summary(conn) -> None:
         st.error(f"Failed to end a session: {error}")
         raise
 
-    get_session_summary_and_save_to_session_table(conn, st.session_state.session)  # Save session summary after ending session
+    get_session_summary_and_save_to_session_table(conn, chatgpt_client, st.session_state.session)  # Save session summary after ending session
 
 
 def chatgpt(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) -> str:
     """
     Processes a chat prompt using OpenAI's ChatCompletion and updates the chat session.
-
-    This function determines if the current chat session should be terminated and a new one started,
-    appends the user's prompt to the session state, sends the prompt to OpenAI's ChatCompletion,
-    and then appends the assistant's response to the session state. It also handles saving messages
-    to the MySQL database.
 
     Args:
         conn: A connection object to the MySQL database.
@@ -122,7 +117,7 @@ def chatgpt(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) 
         message_placeholder = st.empty()
         full_response = ""
         try:
-            for response in openai.ChatCompletion.create(
+            for response in chatgpt_client.chat.completions.create(
                 model="gpt-4-1106-preview",
                 messages=
                     [{"role": "system", "content": model_role}] +
@@ -135,13 +130,14 @@ def chatgpt(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) 
                 max_tokens=max_tok,
                 stream=True,
                 ):
-                full_response += response.choices[0].delta.get("content", "")
+                full_response += response.choices[0].delta.content or ""
                 message_placeholder.markdown(full_response + "▌")
             message_placeholder.markdown(full_response)
 
         except OpenAIError as e:
             error_response = f"An error occurred with OpenAI in getting chat response: {e}"
             full_response = error_response
+            message_placeholder.markdown(full_response)
         except Exception as e:
             error_response = f"An unexpected error occurred in OpenAI API call: {e}"
             full_response = error_response
@@ -151,7 +147,8 @@ def chatgpt(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) 
 
 
 def gemini(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) -> str:
-    """Generates a response using the Gemini API.
+    """
+    Generates a response using the Gemini API.
 
     Args:
         conn: A MySQL connection object.
@@ -189,7 +186,13 @@ def gemini(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) -
                                     ),
                 stream=True
                 ):
-                full_response += response.text
+                if hasattr(response, 'parts'):
+                    for part in response.parts:
+                        text_content = part.text
+                        full_response += text_content
+                else:
+                    text_content += response.text
+                    full_response += text_content
                 message_placeholder.markdown(full_response + "▌")
             message_placeholder.markdown(full_response)
 
@@ -202,7 +205,8 @@ def gemini(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) -
 
 
 def mistral(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) -> str:
-    """Generates a response using the mistral API.
+    """
+    Generates a response using the mistral API.
 
     Args:
         conn: A MySQL connection object.
@@ -250,11 +254,6 @@ def claude(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) -
     """
     Processes a chat prompt using Anthropic's Claude 3 model and updates the chat session.
 
-    This function determines if the current chat session should be terminated and a new one started,
-    appends the user's prompt to the session state, sends the prompt to Anthropic's messages.create(),
-    and then appends the assistant's response to the session state. It also handles saving messages
-    to the MySQL database.
-
     Args:
         conn: A connection object to the MySQL database.
         prompt (str): The user's input prompt to the chatbot.
@@ -291,6 +290,108 @@ def claude(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) -
 
         except Exception as e:
             error_response = f"An unexpected error occurred in Claude 3 API call: {e}"
+            full_response = error_response
+            message_placeholder.markdown(full_response)
+
+    return full_response
+
+
+def together(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) -> str:
+    """
+    Processes a chat prompt using Together's ChatCompletion and updates the chat session.
+
+    Args:
+        conn: A connection object to the MySQL database.
+        prompt (str): The user's input prompt to the chatbot.
+        temp (float): The temperature parameter for Together's ChatCompletion.
+        p (float): The top_p parameter for Together's ChatCompletion.
+        max_tok (int): The maximum number of tokens for Together's ChatCompletion.
+
+    Raises:
+        Raises an exception if there is a failure in database operations or Together's API call.
+    """
+    role = "You are an expert programmer who helps to write and debug code based on \
+            the user's request with concise explanations. \
+            When rendering code samples always include the import statements if applicable. \
+            When giving required code solutions include complete code with no omission. \
+            When rephrasing paragraphs, use lightly casual, straight-to-the-point language."
+    with st.chat_message("user"):
+        st.markdown(prompt1)
+    with st.chat_message("assistant"):
+        message_placeholder = st.empty()
+        full_response = ""
+        try:
+            for response in together_client.chat.completions.create(
+                model="codellama/CodeLlama-70b-Instruct-hf",
+                messages=
+                    [{"role": "system", "content": role}] +
+                    [
+                    {"role": m["role"], 
+                     "content": f'[INST]{m["content"]}[/INST]' if m["role"] == "user" \
+                     else m["content"]}
+                    for m in st.session_state.messages
+                    ],
+                temperature=temp,
+                top_p=p,
+                max_tokens=max_tok,
+                stream=True,
+                ):
+                full_response += response.choices[0].delta.content or ""
+                message_placeholder.markdown(full_response + "▌")
+            message_placeholder.markdown(full_response)
+
+        except OpenAIError as e:
+            error_response = f"An error occurred with TogetherAI in getting chat response: {e}"
+            full_response = error_response
+            message_placeholder.markdown(full_response)
+        except Exception as e:
+            error_response = f"An unexpected error occurred in TogetherAI API call: {e}"
+            full_response = error_response
+            message_placeholder.markdown(full_response)
+
+    return full_response
+
+
+def together_python(prompt1: str, temp: float, p: float, max_tok: int) -> str:
+    """
+    Processes a prompt using Together's Completion and updates the chat session. This
+    function is not a chat, only one prompt at a time.
+
+    Args:
+        conn: A connection object to the MySQL database.
+        prompt (str): The user's input prompt to the chatbot.
+        temp (float): The temperature parameter for Together's ChatCompletion.
+        p (float): The top_p parameter for Together's Completion.
+        max_tok (int): The maximum number of tokens for Together's Completion.
+
+    Raises:
+        Raises an exception if there is a failure in database operations or Together's API call.
+    """
+    with st.chat_message("user"):
+        st.markdown(prompt1)
+
+    with st.chat_message("assistant"):
+        message_placeholder = st.empty()
+        full_response = ""
+        try:
+            for response in together_client.completions.create(
+                model="codellama/CodeLlama-70b-Python-hf",
+                prompt=prompt1,
+                temperature=temp,
+                top_p=p,
+                max_tokens=max_tok,
+                stream=True,
+                ):
+                full_response += response.choices[0].text or ""
+                message_placeholder.markdown(full_response + "▌")
+            message_placeholder.markdown(full_response)
+
+        except OpenAIError as e:
+            error_response = f"An error occurred with TogetherAI in getting chat response: {e}"
+            full_response = error_response
+            message_placeholder.markdown(full_response)
+        except Exception as e:
+            error_response = f"An unexpected error occurred in TogetherAI API call: {e}"
             full_response = error_response
             message_placeholder.markdown(full_response)
 
@@ -367,8 +468,12 @@ def process_prompt(conn, prompt1, model_name, model_role, temperature, top_p, ma
         responses = claude(prompt1, model_role, temperature, top_p, int(max_token))
     elif model_name == "gemini-1.0-pro-latest":
         responses = gemini(prompt1, model_role, temperature, top_p, int(max_token))
-    else:  # case for mistral api
-        responses = mistral(prompt1, model_role, temperature, top_p, int(max_token))
+    elif model_name == "mistral-large-latest":
+        responses = mistral(prompt1, model_role, temperature, top_p, int(max_token))   
+    elif model_name == "CodeLlama-70b-Instruct-hf":
+        responses = together(prompt1, model_role, temperature, top_p, int(max_token))  
+    else:  # case for CodeLlama-70b-Python-hf from togetherAI 
+        responses = together_python(prompt1, temperature, top_p, int(max_token))  
 
     st.session_state.messages.append({"role": "assistant", "content": responses})
 
@@ -377,22 +482,32 @@ def process_prompt(conn, prompt1, model_name, model_role, temperature, top_p, ma
 
 
 # Get app keys
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 MISTRAL_API_KEY = st.secrets["MISTRAL_API_KEY"]
 CLAUDE_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
+TOGETHER_API_KEY = st.secrets["TOGETHER_API_KEY"]
 
-# Set gemini app configuration
+# Set gemini api configuration
 genai.configure(api_key=GOOGLE_API_KEY)
 gemini_model = genai.GenerativeModel('gemini-1.0-pro-latest')
 
-# Set mastral app configuration
+# Set mastral api configuration
 mistral_model = "mistral-large-latest"
 mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
 
-# Set Claude app configuration
+# Set Claude api configuration
 claude_model = "claude-3-opus-20240229"
 claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY,)
+
+# Set chatgpt api configuration
+chatgpt_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+
+# Set together app configuration
+together_client = openai.OpenAI(
+  api_key=TOGETHER_API_KEY,
+  base_url='https://api.together.xyz/v1'
+)
 
 # Database initial operation
 connection = connect(**st.secrets["mysql"])  # get database credentials from .streamlit/secrets.toml
@@ -417,18 +532,20 @@ if new_chat_button:
     set_only_current_session_state_to_true("new_session")
     st.session_state.load_session = False
     st.session_state.search_session = False
+    st.session_state.drop_file = False
 
 
-# The following code handles the search and retreival of the messages of a previous chat session
+# The following code handles the search and retreival of the messages of a chat session
 # (list of all matched sessions together)
 search_session = st.sidebar.button\
-                (r"$\textsf{\normalsize SEARCH a previous session}$", 
+                (r"$\textsf{\normalsize SEARCH for a session}$", 
                  on_click=set_load_session_to_False, 
                  type="primary", 
                  key="search")
 
 if search_session:
     st.session_state.search_session = True
+    st.session_state.drop_file = False
 
 if st.session_state.search_session:
     keywords = st.sidebar.text_input("Search keywords (separated by a space if more than one, default AND logic)")
@@ -445,7 +562,7 @@ if st.session_state.search_session:
 
         # Show options as summary. The returned value is the session id of the picked session.
         load_history_level_2 = st.sidebar.selectbox(
-                label="Select a previous chat session:",
+                label="Select a chat session:",
                 placeholder='Pick a session',
                 options=list((level_two_options_new["All dates"]).keys()),
                 index=None,
@@ -486,15 +603,17 @@ if st.session_state.search_session:
                 st.session_state.delete_session = True
 
 
-st.title("Personal ChatGPT")
+st.title("Personal LLM APP")
 st.sidebar.title("Options")
 model_name = st.sidebar.radio("Choose model:",
                                 ("gpt-4-1106-preview",
                                  "claude-3-opus-20240229", 
                                  "mistral-large-latest",
+                                 "CodeLlama-70b-Instruct-hf",
+                                #  "CodeLlama-70b-Python-hf",
                                  "gemini-1.0-pro-latest"
                                  ),
-                                index=0)
+                                index=4)
 
 # Handle model behavior. The behavior chosen will be reused rather than using a default value. 
 # If the behavior table is empty, set the initial behavior to "Deterministic".
@@ -518,10 +637,10 @@ if behavior != st.session_state.behavior:  # only save to database if behavior i
 
 max_token = st.sidebar.number_input(
     label="Select the max number of tokens the model can generate",
-    min_value=1000,
+    min_value=500,
     max_value=4000,
-    value=4000,
-    step=1000
+    value=1000,
+    step=500
     )
 
 # Initiate a session (either display the current active session in the database or 
@@ -548,13 +667,14 @@ if "session" not in st.session_state:
 # The following code handles the retreival of the messages of a previous chat session
 # (list of session_ids of different date ranges)
 load_session = st.sidebar.button \
-            (r"$\textsf{\normalsize LOAD a previous session}$", 
+            (r"$\textsf{\normalsize LOAD a session}$", 
             on_click=set_search_session_to_False, 
             type="primary", 
             key="load")
 
 if load_session:
     st.session_state.load_session = True
+    st.session_state.drop_file = False
 
 if st.session_state.load_session:
     today_sessions = load_previous_chat_session_ids(connection, 'message', *convert_date('Today', date_earlist, today))
@@ -583,7 +703,7 @@ if st.session_state.load_session:
 
     # Only shows the data ranges with saved chat sessions.
     load_history_level_1 = st.sidebar.selectbox(
-        label='Select a previous chat date:',
+        label='Select a chat date:',
         placeholder='Pick a date',
         options=level_one_options,
         index=None,
@@ -592,7 +712,7 @@ if st.session_state.load_session:
 
     # Show options as summary. The returned value is the session id of the picked session.
     load_history_level_2 = st.sidebar.selectbox(
-            label="Select a previous chat session:",
+            label="Select a chat session:",
             placeholder='Pick a session',
             options=list((level_two_options_new[load_history_level_1]).keys()),
             index=None,
@@ -635,35 +755,83 @@ if st.session_state.load_session:
 
 
 # The following code handles dropping a file from the local computer
-dropped_files = st.sidebar.file_uploader("Drop a file or multiple files (.txt, .rtf, .pdf, etc.)", 
-                                         accept_multiple_files=True,
-                                         on_change=set_both_load_and_search_sessions_to_False,
-                                         key=st.session_state.file_uploader_key)
+drop_file = st.sidebar.button \
+            (r"$\textsf{\normalsize Drop a file to LLM}$", 
+            type="primary", 
+            key="drop")
 
-if dropped_files == []:  # when a file is removed, reset the question to False
-    st.session_state.question = False
+if drop_file:
+    st.session_state.drop_file = True
+    st.session_state.load_session = False
+    st.session_state.search_session = False
 
-question = ""
-prompt_f = ""
-if dropped_files != [] \
-    and not st.session_state.question:
-        question = st.sidebar.text_area(
-            "Any question about the files? (to be inserted at start of the files)", 
-            placeholder="None")
+if st.session_state.drop_file:
+    dropped_files = st.sidebar.file_uploader("Drop a file or multiple files (.txt, .rtf, .pdf, .csv)", 
+                                            accept_multiple_files=True,
+                                            on_change=set_both_load_and_search_sessions_to_False,
+                                            key=st.session_state.file_uploader_key)
 
-        for dropped_file in dropped_files:   
-            file_prompt = extract_text_from_different_file_types(dropped_file)
-            prompt_f += file_prompt
+    if dropped_files == []:  # when a file is removed, reset the question to False
+        st.session_state.question = False
 
-        prompt_f = question + " " + prompt_f
+    question = ""
+    prompt_f = ""
+    if dropped_files != [] \
+        and not st.session_state.question:
+            question = st.sidebar.text_area(
+                "Any question about the files? (to be inserted at start of the files)", 
+                placeholder="None")
 
-        to_chatgpt = st.sidebar.button("Send to LLM API")
-        st.sidebar.markdown("""----------""")
+            for dropped_file in dropped_files:   
+                file_prompt = extract_text_from_different_file_types(dropped_file)
+                prompt_f += file_prompt
 
-        if dropped_files != [] and to_chatgpt:
-            # and (to_chatgpt and question != ""):
-            st.session_state.question = True
-            st.session_state.send_drop_file = True
+            prompt_f = question + " " + prompt_f
+
+            to_chatgpt = st.sidebar.button("Send to LLM API")
+            st.sidebar.markdown("""----------""")
+
+            if dropped_files != [] and to_chatgpt:
+                # and (to_chatgpt and question != ""):
+                st.session_state.question = True
+                st.session_state.send_drop_file = True
+                st.session_state.drop_file = False
+
+
+# The following code handles the deletion of all chat history. The code needs to be
+# after messages printing in order to show confirmation at end of messages.
+st.sidebar.markdown("""----------""")
+empty_database = st.sidebar.button(
+    r"$\textsf{\normalsize Delete the entire chat history}$", type="primary")
+
+if empty_database:
+    st.session_state.messages = []
+    st.session_state.empty_data = True
+    st.error(r"$\textsf{\large Do you really wanna DELETE THE ENTIRE CHAT HISTORY?}$", \
+             icon="🔥")
+
+    placeholder_confirmation_all = st.empty()
+
+    if st.session_state.empty_data:
+        with placeholder_confirmation_all.container():
+            confirmation_2 = st.selectbox(
+                label="CONFIRM YOUR ANSWER (If you choose 'Yes', ALL CHAT HISTORY in the local \
+                    database will be deleted):",
+                placeholder="Pick a choice",
+                options=['No', 'Yes'],
+                index=None,
+                key="second_confirmation"
+            )
+        if confirmation_2 == 'Yes':
+            delete_all_rows(connection)
+            st.warning("All data in the database deleted.", icon="🚨")
+            st.session_state.empty_data = False
+            st.session_state.new_session = True
+            st.session_state.session = None
+            st.rerun()
+        elif confirmation_2 == 'No':
+            st.success("Data not deleted.")
+            st.session_state.empty_data = False
 
 
 # Print each message on page (this code prints pre-existing message before calling chatgpt(), 
@@ -680,7 +848,7 @@ if st.session_state.delete_session:
         st.session_state.delete_session = True
         st.error("Do you really wanna delete this chat history?", icon="🚨")
     else:
-        st.warning("No previously saved session loaded. Please select one from the above drop-down lists.")
+        st.warning("No saved session loaded. Please select one from the above drop-down lists.")
         st.session_state.delete_session = False
 
     placeholder_confirmation_sesson = st.empty()
@@ -703,37 +871,6 @@ if st.session_state.delete_session:
             st.success("Data not deleted.")
             st.session_state.delete_session = False
 
-
-# The following code handles the deletion of all chat history. The code needs to be
-# after messages printing in order to show confirmation at end of messages.
-empty_database = st.sidebar.button(
-    r"$\textsf{\normalsize Delete the entire chat history}$", type="primary")
-
-if empty_database:
-    st.session_state.empty_data = True
-    st.error("Do you really, really, wanna delete ALL CHAT HISTORY?", icon="🚨")
-
-placeholder_confirmation_all = st.empty()
-
-if st.session_state.empty_data:
-    with placeholder_confirmation_all.container():
-        confirmation_2 = st.selectbox(
-            label="CONFIRM YOUR ANSWER (If you choose 'Yes', ALL CHAT HISTORY in the database will be deleted):",
-            placeholder="Pick a choice",
-            options=['No', 'Yes'],
-            index=None,
-            key="second_confirmation"
-        )
-    if confirmation_2 == 'Yes':
-        delete_all_rows(connection)
-        st.warning("All data in the database deleted.", icon="🚨")
-        st.session_state.empty_data = False
-        st.session_state.new_session = True
-        st.session_state.session = None
-        st.rerun()
-    elif confirmation_2 == 'No':
-        st.success("Data not deleted.")
-        st.session_state.empty_data = False
 
 
 # The following code handles model API call and new chat session creation (if necessary) before sending
