@@ -13,7 +13,9 @@ from drop_file import increment_file_uploader_key, \
                         extract_text_from_different_file_types, \
                         save_to_mysql_message, \
                         set_both_load_and_search_sessions_to_False
-from init_database import init_mysql_timezone, \
+from init_database import add_column_model_to_message_search_table, \
+                        add_column_model_to_message_table, \
+                        init_mysql_timezone, \
                         init_database_tables, \
                         modify_content_column_data_type_if_different
 from init_session import get_and_set_current_session_id, \
@@ -45,6 +47,7 @@ from save_to_html import convert_messages_to_markdown, \
                         get_summary_and_return_as_file_name, \
                         is_valid_file_name
 from search_message import delete_all_rows_in_message_serach, \
+                        save_to_mysql_message_search, \
                         search_keyword_and_save_to_message_search_table
 from session_summary import get_session_summary_and_save_to_session_table
 
@@ -118,6 +121,9 @@ def chatgpt(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) 
         st.markdown(prompt1)
 
     with st.chat_message("assistant"):
+        text = f":blue-background[:blue[**{model_name}**]]"  
+        st.markdown(text)
+
         message_placeholder = st.empty()
         full_response = ""
         try:
@@ -165,6 +171,9 @@ def gemini(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) -
         st.markdown(prompt1)
 
     with st.chat_message("assistant"):
+        text = f":blue-background[:blue[**{model_name}**]]"  
+        st.markdown(text)
+
         message_placeholder = st.empty()
         full_response = ""
         try:
@@ -224,6 +233,9 @@ def mistral(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) 
         st.markdown(prompt1)
 
     with st.chat_message("assistant"):
+        text = f":blue-background[:blue[**{model_name}**]]"  
+        st.markdown(text)
+
         message_placeholder = st.empty()
         full_response = ""
 
@@ -272,6 +284,9 @@ def claude(prompt1: str, model_role: str, temp: float, p: float, max_tok: int) -
         st.markdown(prompt1)
 
     with st.chat_message("assistant"):
+        text = f":blue-background[:blue[**{model_name}**]]"  
+        st.markdown(text)
+
         message_placeholder = st.empty()
         full_response = ""
         try:
@@ -319,9 +334,14 @@ def together(prompt1: str, model_role: str, temp: float, p: float, max_tok: int)
             When rendering code samples always include the import statements if applicable. \
             When giving required code solutions include complete code with no omission. \
             When rephrasing paragraphs, use lightly casual, straight-to-the-point language."
+
     with st.chat_message("user"):
         st.markdown(prompt1)
+
     with st.chat_message("assistant"):
+        text = f":blue-background[:blue[**{model_name}**]]"  
+        st.markdown(text)
+
         message_placeholder = st.empty()
         full_response = ""
         try:
@@ -375,6 +395,9 @@ def together_python(prompt1: str, temp: float, p: float, max_tok: int) -> str:
         st.markdown(prompt1)
 
     with st.chat_message("assistant"):
+        text = f":blue-background[:blue[**{model_name}**]]"  
+        st.markdown(text)
+
         message_placeholder = st.empty()
         full_response = ""
         try:
@@ -410,7 +433,8 @@ def save_session_state_messages(conn) -> None:
     conn: The database connection object.
     """
     for message in st.session_state.messages:
-        save_to_mysql_message(conn, st.session_state.session, message["role"], message["content"])
+        save_to_mysql_message(conn, st.session_state.session, message["role"], 
+                              message["model"], message["content"])
 
 
 def determine_if_terminate_current_session_and_start_a_new_one(conn) -> None:
@@ -464,7 +488,7 @@ def process_prompt(conn, prompt1, model_name, model_role, temperature, top_p, ma
     None
     """
     determine_if_terminate_current_session_and_start_a_new_one(conn)
-    st.session_state.messages.append({"role": "user", "content": prompt1})
+    st.session_state.messages.append({"role": "user", "model": "", "content": prompt1})
 
     if model_name == "gpt-4-turbo-2024-04-09":
         responses = chatgpt(prompt1, model_role, temperature, top_p, int(max_token))
@@ -479,10 +503,11 @@ def process_prompt(conn, prompt1, model_name, model_role, temperature, top_p, ma
     else:  # case for CodeLlama-70b-Python-hf from togetherAI 
         responses = together_python(prompt1, temperature, top_p, int(max_token))  
 
-    st.session_state.messages.append({"role": "assistant", "content": responses})
+    st.session_state.messages.append({"role": "assistant", "model": model_name, 
+                                      "content": responses})
 
-    save_to_mysql_message(conn, st.session_state.session, "user", prompt1)
-    save_to_mysql_message(conn, st.session_state.session, "assistant", responses)
+    save_to_mysql_message(conn, st.session_state.session, "user", "", prompt1)
+    save_to_mysql_message(conn, st.session_state.session, "assistant", model_name, responses)
 
 
 # Get app keys
@@ -518,6 +543,8 @@ connection = connect(**st.secrets["mysql"])  # get database credentials from .st
 init_database_tables(connection) # Create tables if not existing
 init_mysql_timezone(connection)  # Set database global time zone to America/Chicago
 modify_content_column_data_type_if_different(connection)
+add_column_model_to_message_table(connection)  # Add model column to message table if not exist
+add_column_model_to_message_search_table(connection) # Add model column to message_search table if not exist
 
 init_session_states()  # Initialize all streamlit session states if there is no value
 
@@ -589,7 +616,7 @@ if st.session_state.search_session:
             file_name = get_summary_and_return_as_file_name(connection, load_history_level_2) + ".html"
 
             download_chat_session = st.sidebar.download_button(
-                label="Save loaded session",
+                label="Save it to a .html file",
                 data=session_html,
                 file_name=file_name,
                 mime="text/markdown",
@@ -600,7 +627,7 @@ if st.session_state.search_session:
                 else:
                     st.error(f"The file name '{file_name}' is not a valid file name. File not saved!", icon="🚨")
 
-            delete_a_session = st.sidebar.button("Delete loaded session from database")
+            delete_a_session = st.sidebar.button("Delete it from database")
             st.sidebar.markdown("""----------""")
 
             if delete_a_session:
@@ -754,7 +781,7 @@ if st.session_state.load_session:
         file_name = get_summary_and_return_as_file_name(connection, load_history_level_2) + ".html"
 
         download_chat_session = st.sidebar.download_button(
-            label="Save loaded session",
+            label="Save it to a .html file",
             data=session_html,
             file_name=file_name,
             mime="text/markdown",
@@ -765,7 +792,7 @@ if st.session_state.load_session:
             else:
                 st.error(f"The file name '{file_name}' is not a valid file name. File not saved!", icon="🚨")
 
-        delete_a_session = st.sidebar.button("Delete loaded session from database")
+        delete_a_session = st.sidebar.button("Delete it from database")
         st.sidebar.markdown("""----------""")
 
         if delete_a_session:
@@ -857,7 +884,16 @@ if empty_database:
 # where the latest messages will be printed.) if not loading or searching a previous session.
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+        if message["role"] == "user":
+            st.markdown(message["content"])
+        else:
+            if message["model"] == "":
+                st.markdown(message["content"])
+            else:
+                text = message["model"]
+                text = f":blue-background[:blue[**{text}**]]"   
+                st.markdown(text)
+                st.markdown(message["content"])
 
 
 # The following code handles previous session deletion after uploading. The code needs to be
