@@ -236,17 +236,6 @@ def extract_jason_from_csv(csv_file) -> str:
     return json_data
 
 
-# def extract_from_text(file) -> str:
-
-#     raw_data = file.read()
-#     result = chardet.detect(raw_data)
-#     st.write(result)
-#     encode = result["encoding"]
-#     contents = raw_data.decode(encode)
-
-#     return contents 
-
-
 def extract_text_from_different_file_types(file) -> str:
     """
     Extract text from a file of various types including PDF, TXT, RTF, and ZIP.
@@ -302,7 +291,7 @@ def extract_text_from_zip(zip_file) -> list:
     with tempfile.TemporaryDirectory() as temp_dir:
         # Open the ZIP file in read mode
         with zipfile.ZipFile(zip_file, 'r') as zip_ref:
-        # Extract all files to the current working directory
+            # Extract all files to the current working directory
             zip_ref.extractall(temp_dir)
 
         # Initialize an empty list to store the extracted files with their contents
@@ -326,12 +315,10 @@ def extract_text_from_zip(zip_file) -> list:
                     except Exception as e:
                         print(f"Error reading {filename}: {e}")
 
-    # st.markdown(extracted_files)
-
     return extracted_files
 
 
-def files_to_prompt_text(extracted_text, _question) -> str:
+def change_to_prompt_text(extracted_text, _question) -> str:
     """
     Convert the extracted files and their contents into a prompt text for an LLM API.
     """
@@ -349,6 +336,8 @@ def files_to_prompt_text(extracted_text, _question) -> str:
     else:
         prompt_text = extracted_text
 
+    # prompt_text =f"```\n{prompt_text}\n```" 
+
     llm_prompt = (
         "You are a helpful assistant.\n"
         "Context information from a file (or files) and their contents is below.\n"
@@ -357,13 +346,13 @@ def files_to_prompt_text(extracted_text, _question) -> str:
         "---------------------\n"
         "Given the information above answer the query below.\n"   
         "Your answer should provide the main insights and patterns that can be \n"
-        "derived from the files.\n"
+        "derived from the files. Do not answer in a code block.\n"
         f"Query: {_question}\n"
         "Answer: "
     )
     # Wrap the text in triple backticks as code text to prevent "#" be interpreted as header in markdown.
     llm_prompt =f"```\n{llm_prompt}\n```"   
-                                                        # 
+
     # Return the prompt text
     return llm_prompt
 
